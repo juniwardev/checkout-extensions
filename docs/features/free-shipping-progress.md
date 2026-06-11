@@ -5,7 +5,9 @@
 **Extension type:** Checkout UI Extension (Polaris web components + Preact, `api_version = "2026-04"`)
 **Extension target:** `purchase.checkout.block.render` (generic block, merchant places via checkout editor)
 
-> **Revision note:** This brief was revised after initial Architect investigation surfaced two facts that changed the design: (1) the 2026-04 Shopify Checkout UI Extensions API uses Preact + Polaris web components (`s-*` elements + a global `shopify` signals object), NOT React + hooks; and (2) the Checkout API does not expose the merchant's free-shipping threshold value directly. The brief below reflects the actual platform constraints.
+> **Revision note (v1):** This brief was revised after initial Architect investigation surfaced two facts that changed the design: (1) the 2026-04 Shopify Checkout UI Extensions API uses Preact + Polaris web components (`s-*` elements + a global `shopify` signals object), NOT React + hooks; and (2) the Checkout API does not expose the merchant's free-shipping threshold value directly. The brief below reflects the actual platform constraints.
+>
+> **Revision note (v2):** Further refined after the Plan-Reviewer-stage MCP verification revealed the `s-progress` component's `tone` attribute only accepts two values, `auto` and `critical`, NOT the semantic tone palette (`primary`, `success`, `warning`, `critical`, `neutral`) initially specified. Shopify's checkout components deliberately constrain visual customization to enforce design consistency across merchants. The `progress_bar_tone` setting is kept (merchants still get one knob between default and attention-grabbing styling), but the allowed value set is reduced to match platform reality.
 
 ---
 
@@ -96,12 +98,12 @@ Four merchant-configurable settings:
 | :--- | :--- | :--- | :--- | :--- |
 | `use_shopify_free_shipping_rate` | `boolean` | Auto-detect free shipping from delivery options | When enabled, detect qualified state from currently-available zero-cost delivery options. When disabled, use the manual threshold below. | `true` |
 | `manual_threshold` | `number_decimal` | Manual free shipping threshold | The cart total at which free shipping applies (used for progress bar visualization in both modes; used for qualified-state detection when auto-detect is disabled). | `75.00` |
-| `progress_bar_tone` | `single_line_text_field` | Progress bar tone | Semantic tone for the progress bar fill. Allowed values: `primary`, `success`, `warning`, `critical`, `neutral`. Defaults to `primary`. | `primary` |
+| `progress_bar_tone` | `single_line_text_field` | Progress bar tone | Visual tone for the progress bar fill. Allowed values: `auto` (default styling, matches the checkout theme) or `critical` (attention-grabbing/warning styling). The platform constrains `s-progress` to these two tones — additional semantic tones (success, warning, neutral, etc.) are not supported at `api_version = "2026-04"`. | `auto` |
 | `qualified_emoji` | `single_line_text_field` | Qualified state emoji | Emoji shown next to the "You qualify for free shipping" message. | `🎉` |
 
-The Coder must validate `progress_bar_tone` at runtime against the allowed set and fall back to `primary` if the merchant enters something invalid.
+The Coder must validate `progress_bar_tone` at runtime against the allowed set (`auto`, `critical`) and fall back to `auto` if the merchant enters something invalid.
 
-If `choice` is a supported setting type in `api_version = "2026-04"`, prefer it over `single_line_text_field` for `progress_bar_tone` so the merchant gets a dropdown instead of free-text. Architect to verify.
+Note: the `choice` field type is NOT supported at `api_version = "2026-04"` (verified during Plan-Reviewer-stage MCP grounding). `single_line_text_field` with runtime validation is the correct approach.
 
 ---
 
@@ -175,7 +177,7 @@ No other extensions or app-level files should be modified.
 5. **Toggle OFF, at threshold:** Add items totaling exactly the threshold. Confirm qualified message renders.
 6. **Toggle OFF, above threshold:** Add items over threshold. Confirm qualified message renders.
 7. **Reactive update with discount code:** Start in below-threshold state. Apply a discount code that pushes the total below the previous level. Confirm progress bar updates downward reactively. Remove discount, confirm bar returns.
-8. **Tone customization:** Change `progress_bar_tone` in the editor to each of the allowed values (`primary`, `success`, `warning`, `critical`, `neutral`). Confirm the progress bar fill color updates correspondingly.
+8. **Tone customization:** Change `progress_bar_tone` in the editor between `auto` and `critical`. Confirm the progress bar styling shifts (default vs. attention-grabbing). Also enter an invalid value (e.g. `success`) and confirm the runtime validation falls back to `auto` without errors.
 9. **Locale switching:** With browser/checkout locale set to Spanish, confirm all extension strings render in Spanish.
 10. **Mobile viewport:** Resize browser to 375px width. Confirm bar and message render correctly without overflow.
 
