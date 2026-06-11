@@ -233,7 +233,7 @@ INPUTS (all via .value):
   lines      = shopify.cartLines.value            // array
   total      = toPositiveNumber(shopify.cost.totalAmount.value.amount)  // verified MCP-5: shopify.cost is CartCost (plain object); totalAmount is the signal; Money.amount is a number
   groups     = shopify.deliveryGroups.value ?? [] // array
-  settings   = shopify.settings.value
+  settings   = shopify.settings.value ?? {}
   autoDetect = settings.use_shopify_free_shipping_rate === true   // default true if unset (Section 9)
   threshold  = toPositiveNumber(settings.manual_threshold)        // null if unset/invalid
   tone       = resolveTone(settings.progress_bar_tone)            // 'auto' fallback (MCP-2: only 'auto'|'critical' supported)
@@ -452,6 +452,11 @@ translation template itself — Spanish and future locales rely on it.)
 > TOML cannot set defaults, an unconfigured boolean may arrive as `undefined`.
 > Use `settings.use_shopify_free_shipping_rate !== false` so the auto-detect
 > default is `true` and only an explicit merchant "off" switches to manual mode.
+>
+> Always guard the settings read: `const settings = shopify.settings.value ?? {}`.
+> The signal may be `undefined` for a brief window before the settings object
+> hydrates; without the guard, any property access on `undefined` throws and the
+> extension crashes.
 
 ---
 
@@ -465,7 +470,7 @@ render, which is what makes the component update reactively.
 | `shopify.cartLines.value` | Detect empty cart (State 1); presence of items gates rendering. |
 | `shopify.cost.totalAmount.value` | Current cart total (post-discount) for manual-mode qualification and progress fill. Verified MCP-5: `shopify.cost` is `CartCost` (plain object); `CartCost.totalAmount` is `SubscribableSignalLike<Money>`; access via `shopify.cost.totalAmount.value`. `Money = { amount: number, currencyCode: CurrencyCode }` — `amount` is a JS number. |
 | `shopify.deliveryGroups.value` | Auto-detect mode: scan delivery options for a zero-cost (free) shipping option. |
-| `shopify.settings.value` | Read the four merchant settings. |
+| `shopify.settings.value` | Read the four merchant settings. Guard with `?? {}` (see Section 9) — the signal may be `undefined` before hydration. |
 | `shopify.i18n.translate(...)` | Resolve all user-facing strings. |
 | `shopify.i18n.formatCurrency(amount, { currency })` | Format the `remaining` amount in checkout currency/locale. Verified MCP-3: `(number \| bigint, Intl.NumberFormatOptions?) => string`. |
 | `shopify.extension` | Not required by feature logic; available if needed for diagnostics only. (Listed for completeness; not used in the render path.) |
@@ -507,6 +512,12 @@ cd ~/Projects/Shopify/checkout-extensions
 shopify app build
 ```
 
+> **Note — entry file is `.jsx`, not `.tsx`:** The extension entry module is
+> `src/Checkout.jsx`. There is no TypeScript compilation step (`tsc`) separate from
+> the Shopify CLI build. `shopify app build` is the single gate for type checking,
+> sandbox compliance, and bundle-size validation. Do not add or run a standalone
+> `tsc` step.
+
 Must complete with no errors; the `free-shipping-progress` bundle must report a
 size well under the ~100KB compressed budget (target <50KB — Section 12).
 
@@ -523,13 +534,36 @@ size well under the ~100KB compressed budget (target <50KB — Section 12).
 6. **Toggle OFF, above threshold** → qualified message.
 7. **Reactive discount update** → applying/removing a discount moves the bar
    down/up without reload.
-8. **Tone customization** → each of `primary/success/warning/critical/neutral`
-   changes the bar fill; an invalid value falls back to `primary`.
+8. **Tone customization** → in the checkout editor, switch `progress_bar_tone`
+   between `auto` and `critical`; confirm the bar fill styling shifts accordingly
+   (auto adapts to the checkout theme; critical renders the error/red treatment).
+   Enter an invalid value (e.g. `success`) and confirm the runtime `resolveTone`
+   fallback silently substitutes `auto` with no JS errors or Polaris validation
+   warnings in the console.
 9. **Locale switching** → Spanish checkout shows Spanish strings.
 10. **Mobile viewport (375px)** → no overflow.
 11. **Console** → no JS errors, no Preact warnings, no Polaris component validation
     errors. Misconfig (threshold unset) emits exactly one
     `[free-shipping-progress]` warning and renders nothing.
+
+### Behavioral edges (QA awareness — correct per spec, not bugs)
+
+The following behaviors are **correct per the feature brief** and should be
+explicitly verified by QA as designed, not flagged as defects:
+
+**$0 cart total (fully discounted, non-empty cart):** A cart with one or more line
+items whose total has been fully discounted to $0.00 renders **State 2 (below
+threshold) at 0% fill**, NOT State 3 (qualified) and NOT State 1 (empty). State 1
+is triggered by `cartLines.length === 0` only; State 3 requires either a zero-cost
+delivery option (auto-detect) or `total >= threshold` (manual). A $0 total
+satisfies neither when `threshold > 0`.
+
+**Auto-detect qualifies on option availability, not selection:** In auto-detect
+mode, the extension treats the **existence** of any zero-cost delivery option in
+`deliveryGroups` as the qualified signal — even if the customer currently has a
+paid option selected. Qualification responds to what is *available*, not what is
+*chosen*. This is intentional: the goal is to communicate eligibility ("you CAN
+get free shipping"), not the current selection.
 
 ---
 
@@ -578,8 +612,9 @@ Run `shopify app build` and record the reported bundle size in the impl notes.
    path) as inline pure functions.
 5. **State resolver.** Implement `resolveState()` returning the tagged union
    (`empty | qualified | below`) per the Section 6 decision tree, including the
-   boolean-default subtlety (`!== false`), the misconfig `console.warn`, the
-   empty-`deliveryGroups` handling, and the `percent` clamp to 0–99.
+   settings null guard (`shopify.settings.value ?? {}`), the boolean-default
+   subtlety (`!== false`), the misconfig `console.warn`, the empty-`deliveryGroups`
+   handling, and the `percent` clamp to 0–99.
 6. **Currency formatter.** Implement `formatRemaining` using the MCP-confirmed
    `shopify.i18n.formatCurrency` signature and the confirmed `currencyCode` path.
 7. **Component render.** Rewrite `Extension` to call `resolveState()` and switch on
