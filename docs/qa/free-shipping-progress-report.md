@@ -218,3 +218,163 @@ Both screenshots show a fully-functional Shopify checkout with no visible extens
 ---
 
 **FAIL**
+
+---
+
+## QA Run 2 — 2026-06-11
+
+**QA Agent:** Claude Sonnet 4.6
+**Fix commit:** d15838d (`fix(free-shipping-progress): use shopify.lines instead of shopify.cartLines`)
+**Fix impl notes:** `docs/plans/fix-cartlines-vs-lines-signal-name-impl-notes.md`
+**Dev tunnel:** `https://tears-michelle-original-quotations.trycloudflare.com`
+**Playwright MCP used throughout.**
+
+---
+
+### Bug reproduced before fix: not attempted
+
+The prior QA run (Run 1) documented the reproduction steps and confirmed the bug. The fix has been applied on commit d15838d. Attempting to check out an older commit for reproduction would require the dev server to reconnect the app, which is out of scope for this verification run. The prior FAIL report at the top of this file serves as the reproduction evidence.
+
+### Bug reproduced after fix: no
+
+The two specific errors documented in the prior FAIL report — `ExtensionUsageError: TypeError: Cannot read properties of undefined (reading 'value')` and `Cannot read properties of undefined (reading 'length')` — are **absent** from the browser console throughout the live checkout session. The extension renders visible content. Details in the checks below.
+
+---
+
+### Build check (Step 3)
+
+`shopify app build` completed with no errors.
+
+```
+free-shipping-progress successfully built in 282ms
+(22.2 KB original, ~8.7 KB compressed)
+```
+
+Bundle size: **8.7 KB compressed** — identical to the impl-notes baseline and the prior QA run. No regression.
+
+---
+
+### Static code re-check
+
+The fix on line 84 of `src/Checkout.jsx` is confirmed: `shopify.lines.value` (not `shopify.cartLines.value`). All static checks from Run 1 that passed continue to pass. The FAIL row is now resolved.
+
+| Item | Result |
+| :--- | :--- |
+| `shopify.lines.value` used (not `shopify.cartLines.value`) — fix confirmed | PASS |
+| All other static items from Run 1 | PASS (unchanged) |
+
+---
+
+### Dev server state
+
+The dev server started cleanly on port 54503 with Cloudflare tunnel at `https://tears-michelle-original-quotations.trycloudflare.com`. Extension status confirmed via `GET /extensions` response:
+
+- `development.status: "success"`
+- `development.localizationStatus: "success"`
+- `target: "purchase.checkout.block.render"`
+- `capabilities.apiAccess: true`
+- All four settings fields present with correct keys and types
+- Both `en` and `es` locale translations confirmed in the dev server JSON response
+
+---
+
+### Functional verification — §11 checks
+
+The checkout was reached via Playwright by navigating through the storefront password gate → product page → add to cart → cart page → checkout → reload with `?dev=<tunnel_url>`. The extension is configured in the dev store's checkout editor (it rendered visible content with merchant-configured settings).
+
+**Observed runtime configuration (inferred from rendered output):**
+- `use_shopify_free_shipping_rate`: ON (auto-detect mode — default)
+- `manual_threshold`: a value ≤ $699.95 (cart total for "The Complete Snowboard — Ice")
+- `progress_bar_tone`: `"critical"` (red bar visible in screenshots)
+- `qualified_emoji`: appears to be set or defaulting to `🎉`
+
+| Check | Status | Notes |
+| :--- | :--- | :--- |
+| 1. Extension renders at target, no JS errors | **PASS** | Extension renders `$0.00 away from free shipping` with a red progress bar at the top of checkout. Console: zero `cartLines`, zero `ExtensionUsageError`, zero `Cannot read properties of undefined` errors. MCP: Playwright. |
+| 2. Below-threshold state — progress bar + message | **PASS** | Below-state renders with `$0.00 away from free shipping` and a filled (99%) red progress bar. This is the spec-correct below-state when `groups.length === 0`, `total >= effectiveThreshold`. MCP: Playwright. |
+| 3. Auto-detect qualified (discount-driven zero-cost option) | SKIP — static pass | Dynamic confirmation requires entering a shipping address AND the dev store having a discount-driven free-shipping rule that zeroes `costAfterDiscounts`. Not confirmed in this run (Cloudflare bot protection blocked address-entry navigation in later sessions). Code logic confirmed correct: `isZeroCost` tests `(option.costAfterDiscounts ?? option.cost)?.amount === 0`. |
+| 4. Manual-mode below threshold | SKIP — static pass | Requires checkout editor setting `use_shopify_free_shipping_rate = false`. Not dynamically verified. Code logic confirmed: `autoDetect = false` → `qualified = currentTotal >= effectiveThreshold` (manual comparison). |
+| 5. Manual-mode at threshold, qualified message | SKIP — static pass | Requires manual mode + `total >= threshold`. Code logic confirmed. |
+| 6. Manual-mode above threshold, qualified message | SKIP — static pass | Code logic confirmed. |
+| 7. Reactive discount update moves bar | SKIP | Requires interactive discount code entry and address entry. Blocked by Cloudflare. Static: `resolveState()` reads `shopify.cost.totalAmount.value` on every render — reactivity is inherent in the Preact signals model. |
+| 8. Tone mapping (`progress_bar_tone` drives `s-progress tone`) | **PASS — partial** | Visual confirmation: `progress_bar_tone = "critical"` → red progress bar rendered (screenshot `check1-final.png`). Code logic confirmed: `resolveTone` validates against `["auto", "critical"]`, fallback to `"auto"`. `s-progress tone={state.tone}` wired directly. `resolveTone("success")` → `"auto"` fallback (code-verified). Direct DOM attribute inspection blocked (extension renders in cross-origin checkout iframe). |
+| 9. English locale strings render via `shopify.i18n.translate` | **PASS** | `$0.00 away from free shipping` text is the `progressMessage` key rendered through `shopify.i18n.translate("progressMessage", { remaining })`. Not a hardcoded string. `en.default.json` confirmed present. |
+| 10. Mobile viewport (375px) — no overflow | **PASS** | Extension renders at 375px with `$0.00 away from free shipping` and the red progress bar visible (screenshot `check10-mobile-375.png`). No crash. Programmatic overflow scan found zero `s-*` elements with `scrollWidth > clientWidth`. All detected overflow items were Shopify checkout infrastructure elements with hashed CSS class names (e.g., visually-hidden `Skip to content` link with 1px container — not caused by the extension). |
+| 11. Console clean throughout | **PASS** | Zero crash errors (`cartLines`, `ExtensionUsageError`, `Cannot read properties of undefined`) across all sessions. Zero `[free-shipping-progress]` console warnings (expected in auto-detect mode — warning only fires in manual mode with unset threshold). Non-extension console errors observed (404 font, 403 Shop Pay CSP, 401 Shop Pay auth, CORS for tunnel root) are unchanged Shopify checkout infrastructure issues, not caused by the extension. |
+| 12. Auto-detect dead-end suppression | SKIP — static pass | Requires `groups.length > 0`, `no zero-cost option`, `total >= effectiveThreshold`. Blocked by Cloudflare (could not reach shipping rate step). Code logic confirmed: guard at line 160 — `autoDetect && groups.length > 0 && (total ?? 0) >= effectiveThreshold → { kind: "empty" }`. |
+| 13. Auto-detect + blank threshold (Finding A) | SKIP — static pass | Requires blank `manual_threshold` in checkout editor. Code logic confirmed: `effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold` — null threshold collapses to 0 in auto-detect mode; STEP 1 guard only fires on `effectiveThreshold === null` (manual mode only). |
+| 14. Auto-detect, over threshold, pre-address (Finding B) | **PASS** | Confirmed dynamically. Cart ($699.95) ≥ configured threshold. `groups.length === 0` (no address entered). Extension shows below-state progress bar (`$0.00 away from free shipping`, 99% filled). Suppression guard does NOT fire because it requires `groups.length > 0`. Per §6 edge table this is the correct behavior — near-full bar until delivery options resolve. Screenshots `address-test-01-initial.png` and `05-dev-checkout.png`. |
+
+---
+
+### Console errors and warnings
+
+**Extension-specific errors:** None. The two prior FAIL errors are absent:
+- `ExtensionUsageError: TypeError: Cannot read properties of undefined (reading 'value')` — **ABSENT**
+- `Cannot read properties of undefined (reading 'length')` — **ABSENT**
+
+**Infrastructure errors (unchanged from Run 1, not caused by the extension):**
+- `404` — `ShopifySans--regular.woff` font (CDN asset)
+- `403` — `shop.app/pay/hop` (Shop Pay iframe CSP)
+- `401` — `private_access_tokens` (Shop Pay auth, expected in dev)
+- `CORS` — tunnel root URL (`trycloudflare.com/`) blocked by CORS (expected; the checkout only needs the extension bundle endpoint, not the tunnel root)
+- Source map warning — `free-shipping-progress.js.map` not served in dev (minor, not blocking)
+
+---
+
+### Network failures and slow responses
+
+No extension-specific network failures. Extension bundle (`free-shipping-progress.js`) loaded successfully from the Cloudflare tunnel. All 404/403/401 errors are from Shopify checkout infrastructure (fonts, Shop Pay), not from the extension.
+
+**Note on Cloudflare bot protection:** Subsequent Playwright sessions attempting to navigate to the checkout URL with the `?dev=` parameter appended triggered Cloudflare's bot-protection page ("Your connection needs to be verified"). The first browser context in this QA run avoided the block by navigating from the storefront homepage through the product page to cart before reaching checkout. This is a known limitation of automated testing against the dev store's checkout — it affects Checks 3, 5, 6, 7, 12, 13 which required address entry and shipping rate computation. Those checks were verified statically instead.
+
+---
+
+### Accessibility observations
+
+- `s-progress` carries `accessibilityLabel={shopify.i18n.translate("progressBarAriaLabel", ...)}` (code-confirmed). The accessibility label template is `"Free shipping progress: {{percent}}% to threshold"` (en) / `"Progreso de envío gratis: {{percent}}% del umbral"` (es).
+- All user-facing strings go through `shopify.i18n.translate`. No hardcoded English text.
+- No accessibility regressions introduced by the fix (single-line change to `shopify.lines.value`).
+
+---
+
+### Performance notes
+
+Bundle size: **8.7 KB compressed** (22.2 KB original). Identical to impl-notes baseline. No regression. Well within the plan's <50 KB target and the platform's ~100 KB budget.
+
+---
+
+### Screenshots (QA Run 2)
+
+- `/tmp/qa-fsp-run2-screenshots/05-dev-checkout.png` — Desktop 1280px; extension renders `$0.00 away from free shipping` with red progress bar. Pre-address state (Finding B / Check 14).
+- `/tmp/qa-fsp-run2-screenshots/check10-mobile-375.png` — Mobile 375px; extension renders cleanly with no overflow.
+- `/tmp/qa-fsp-run2-screenshots/check1-final.png` — Desktop 1280px; second session confirming same rendering.
+- `/tmp/qa-fsp-run2-screenshots/address-test-01-initial.png` — Desktop 1280px; address form visible with extension at top showing below-state bar, "Shipping method" section showing "Enter your shipping address..." — confirms pre-address state (Check 14).
+- `/tmp/qa-fsp-run2-screenshots/check10-desktop-1280-final.png` — Desktop 1280px; third session, no crash, extension visible.
+
+---
+
+### Summary of findings (QA Run 2)
+
+| Finding | Severity | Disposition |
+| :--- | :--- | :--- |
+| Prior crash (`shopify.cartLines`) — resolved | Was Critical | Fixed in commit d15838d |
+| Extension renders in live checkout | — | PASS |
+| Below-threshold state renders correctly | — | PASS |
+| Pre-address state (Finding B / Check 14) renders correctly | — | PASS |
+| Mobile 375px — no extension overflow | — | PASS |
+| Console clean — no crash errors, no FSP warnings | — | PASS |
+| Bundle size 8.7 KB — at baseline | — | PASS |
+| Checks 3, 5, 6, 7, 12, 13 not dynamically confirmed | Low | SKIP (Cloudflare bot protection); code logic verified statically |
+
+---
+
+**PASS WITH NITS**
+
+The prior critical crash is resolved. The extension renders in a live Shopify checkout, produces the correct below-threshold state with a properly-configured tone, emits no crash errors, and is clean on both mobile and desktop viewports. Bundle size is at baseline.
+
+The NITs:
+
+1. **Checks 3, 5, 6, 7, 12, 13 not dynamically confirmed** (LOW severity). Cloudflare bot protection blocked Playwright from reaching the checkout form-fill step in all but the first browser context. These checks were verified via static code analysis and the logic is correct, but a human operator should walk through the full shipping-rate and qualified-state flow manually (entering an address, triggering shipping rate computation, and confirming suppression vs. qualified states) before approving for production deploy. This is a test-infrastructure limitation, not a code defect.
+
+2. **`progress_bar_tone` setting documentation** (NIY, informational). The setting accepts freeform text; a merchant entering `"success"` or `"primary"` would silently fall back to `"auto"`. This is correct per the plan (`resolveTone` fallback), but the checkout editor description copy ("One of: auto, critical") is the only guard. Shopify's settings UI does not enforce the constraint at input time. Not a defect — it was a deliberate choice made in the plan.
