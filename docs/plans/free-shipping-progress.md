@@ -32,7 +32,7 @@ with the confirmed value. The five items were:
 1. `choice` field type → **NOT supported**; use `single_line_text_field` (MCP-1)
 2. `s-progress` attributes → `tone: 'auto'|'critical'` only; `accessibilityLabel` (MCP-2)
 3. Currency formatter → `shopify.i18n.formatCurrency(number, Intl.NumberFormatOptions)` (MCP-3)
-4. Delivery option cost → `option.cost?.amount === 0` (number, optional chain for PickupLocation) (MCP-4)
+4. Delivery option cost → `(option.costAfterDiscounts ?? option.cost)?.amount === 0` (number, tests buyer-paid price after shipping discounts; optional chain for PickupLocation) (MCP-4)
 5. `cost.totalAmount` shape → `shopify.cost.totalAmount.value.amount` (number); `shopify.cost.totalAmount.value.currencyCode` (MCP-5)
 
 What **is** confirmed from on-disk ground truth (do not re-question):
@@ -42,8 +42,10 @@ What **is** confirmed from on-disk ground truth (do not re-question):
   `document.body` via an exported `async () => { render(<Extension />, document.body) }`.
 - Data is exposed as **Preact signals** read through `.value`. The scaffold uses
   `shopify.instructions.value...` and `shopify.appMetafields.value`. By the same
-  pattern: `shopify.cartLines.value`, `shopify.cost.value`,
-  `shopify.deliveryGroups.value`, `shopify.settings.value`.
+  pattern: `shopify.cartLines.value`, `shopify.deliveryGroups.value`,
+  `shopify.settings.value`. Note: `shopify.cost` is a plain `CartCost` object (not
+  a signal itself); its individual fields are signals, e.g.
+  `shopify.cost.totalAmount.value` (confirmed MCP-5).
 - `shopify.i18n.translate(key, params)` is the translation call (used in the scaffold).
 - The `shopify` global is typed as
   `import('@shopify/ui-extensions/purchase.checkout.block.render').Api` (`shopify.d.ts`).
@@ -136,13 +138,13 @@ component must tolerate unset values.
 key = "use_shopify_free_shipping_rate"
 type = "boolean"
 name = "Auto-detect free shipping from delivery options"
-description = "When enabled, detect the qualified state from currently-available zero-cost delivery options. When disabled, use the manual threshold below."
+description = "When enabled, detect the qualified state from currently-available zero-cost delivery options; the manual threshold below is then optional and is used only to drive the progress bar fill (if left blank, the bar is hidden and only the qualified message is shown once a zero-cost option appears). When disabled, the manual threshold is required and drives both the bar and qualified-state detection."
 
 [[extensions.settings.fields]]
 key = "manual_threshold"
 type = "number_decimal"
 name = "Manual free shipping threshold"
-description = "Cart total at which free shipping applies. Drives the progress bar in both modes; also used for qualified-state detection when auto-detect is off."
+description = "Cart total at which free shipping applies. Required in manual mode (drives both the progress bar and qualified detection). Optional in auto-detect mode, where it only sets the progress-bar fill target; if left blank in auto-detect mode the bar is hidden and qualification is detected purely from zero-cost delivery options."
 
 [[extensions.settings.fields]]
 key = "progress_bar_tone"
@@ -203,48 +205,107 @@ const ALLOWED_TONES = ["auto", "critical"];
 function resolveTone(raw) {
   return ALLOWED_TONES.includes(raw) ? raw : "auto";
 }
+
+// Resolve the qualified-state emoji. Authoritative form (also restated in §8):
+// reject empty/whitespace strings so the qualifiedMessage never renders a leading
+// space. This is the single source of truth — use it everywhere emoji defaulting
+// is needed (do NOT use the weaker `typeof === "string"` short form).
+function resolveEmoji(raw) {
+  return (typeof raw === "string" && raw.trim() !== "") ? raw.trim() : "🎉";
+}
 ```
 
 ### MCP-4 resolved — delivery option cost path
 
-Confirmed from `standard.d.ts` (lines 1451–1515):
+Confirmed from `standard.d.ts` (lines 1451–1604):
 
 - `DeliveryGroup.deliveryOptions: DeliveryOption[]` — property name is `deliveryOptions`.
 - `DeliveryOption = ShippingOption | PickupPointOption | PickupLocationOption`
-- `ShippingOption.cost: Money` and `PickupPointOption.cost: Money` — both have cost.
-- `PickupLocationOption` (type `'pickup'`) has **no `cost` property** — needs optional chain.
+- `ShippingOption` and `PickupPointOption` each have **two** money fields:
+  - `cost: Money` — the cost **before** any shipping discounts are applied
+    (standard.d.ts:1557–1560). This is NOT what the buyer pays.
+  - `costAfterDiscounts: Money` — the cost **after** shipping discounts have been
+    applied; **this is the price the buyer actually pays for shipping**
+    (standard.d.ts:1561–1564).
+- `PickupLocationOption` (type `'pickup'`) has **neither `cost` nor `costAfterDiscounts`** — needs optional chain.
 - `Money.amount: number` — it's a JavaScript number, not a money string.
 
-Zero-cost detection (confirmed shape, no longer defensive):
+**Test the buyer-paid price, not the pre-discount price (Pass 4 finding).** The most
+common way a Shopify store offers free shipping is a free-shipping **discount** (or a
+"free shipping over $X" automatic discount), which zeroes `costAfterDiscounts` while
+leaving `cost` at the carrier's positive base rate. Testing `cost` alone would miss
+that very common configuration and the auto-detect feature would silently fail for
+most real merchant setups. Test `costAfterDiscounts` first, falling back to `cost`
+(so a genuinely $0 flat rate, where `costAfterDiscounts` may be absent, is still caught):
 
 ```js
-// verified MCP-4: option.cost.amount is a number; PickupLocationOption has no cost.
+// verified MCP-4: option.costAfterDiscounts is the buyer-paid price (post shipping
+// discount); option.cost is the pre-discount price. Fall back to cost when
+// costAfterDiscounts is absent so flat-$0 rates still register. amount is a number.
+// PickupLocationOption has neither field, hence the optional chain.
 function isZeroCost(option) {
-  return option.cost?.amount === 0;
+  return (option.costAfterDiscounts ?? option.cost)?.amount === 0;
 }
 ```
 
 The delivery group's options array property is `deliveryOptions` (confirmed: `DeliveryGroup.deliveryOptions: DeliveryOption[]` in standard.d.ts:1463).
 
+### Threshold semantics — manual vs auto-detect mode (Finding A, Pass 3)
+
+`manual_threshold` has **mode-dependent semantics**:
+
+- **Manual mode (`autoDetect === false`):** the threshold is **required**. It drives
+  both the progress bar fill and the qualified-state comparison (`total >= threshold`).
+  An unset/zero/invalid threshold is a genuine misconfiguration — the extension has no
+  way to know when the customer qualifies, so it warns and renders nothing (STEP 1).
+- **Auto-detect mode (`autoDetect === true`):** the threshold is **optional**.
+  Qualification is detected purely from the existence of a zero-cost delivery option,
+  so the threshold is not needed to determine the qualified state. The threshold's
+  only role here is to drive the progress-bar fill target. When the merchant enables
+  auto-detect and leaves the threshold blank — a configuration the setting copy
+  explicitly invites — a null threshold must **not** disable the feature. Instead it is
+  treated as `0`, meaning the qualified message can still render the moment a zero-cost
+  option appears, and the below-state progress bar is simply hidden (there is no
+  meaningful fill target to render).
+
+This is captured by deriving an **effective threshold**:
+
+```js
+// rawThreshold: positive number, or null when unset/zero/invalid.
+rawThreshold = toPositiveNumber(settings.manual_threshold)
+
+// effectiveThreshold drives ALL downstream math. In auto-detect mode a null raw
+// threshold collapses to 0 (Finding A: null must not silently disable the feature).
+// In manual mode it stays null so STEP 1 can reject the misconfiguration.
+effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold
+```
+
 ### Decision tree (drives `resolveState()` — see Section 7 for the tagged union)
 
 ```
 INPUTS (all via .value):
-  lines      = shopify.cartLines.value            // array
-  total      = toPositiveNumber(shopify.cost.totalAmount.value.amount)  // verified MCP-5: shopify.cost is CartCost (plain object); totalAmount is the signal; Money.amount is a number
-  groups     = shopify.deliveryGroups.value ?? [] // array
-  settings   = shopify.settings.value ?? {}
-  autoDetect = settings.use_shopify_free_shipping_rate === true   // default true if unset (Section 9)
-  threshold  = toPositiveNumber(settings.manual_threshold)        // null if unset/invalid
-  tone       = resolveTone(settings.progress_bar_tone)            // 'auto' fallback (MCP-2: only 'auto'|'critical' supported)
-  emoji      = (typeof settings.qualified_emoji === "string" ? settings.qualified_emoji : "🎉")
+  lines        = shopify.cartLines.value            // array
+  total        = toPositiveNumber(shopify.cost.totalAmount.value.amount)  // verified MCP-5: shopify.cost is CartCost (plain object); totalAmount is the signal; Money.amount is a number
+  groups       = shopify.deliveryGroups.value ?? [] // array
+  settings     = shopify.settings.value ?? {}
+  autoDetect   = settings.use_shopify_free_shipping_rate !== false  // default true if unset: undefined !== false → true (Section 9)
+  rawThreshold = toPositiveNumber(settings.manual_threshold)        // null if unset/zero/invalid
+  // effectiveThreshold: null only in manual mode with an unset/invalid threshold.
+  // In auto-detect mode a null raw threshold collapses to 0 (Finding A, Pass 3).
+  effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold
+  tone         = resolveTone(settings.progress_bar_tone)            // 'auto' fallback (MCP-2: only 'auto'|'critical' supported)
+  emoji        = resolveEmoji(settings.qualified_emoji)             // '🎉' fallback when blank/whitespace/non-string (§8 form; see resolveEmoji helper)
 
 STEP 0 — empty cart:
   if (lines.length === 0) -> STATE: { kind: "empty" }   // render nothing
 
-STEP 1 — misconfiguration guard:
-  if (threshold === null):
-      console.warn('[free-shipping-progress] manual_threshold is unset, zero, or invalid; rendering nothing.')
+STEP 1 — misconfiguration guard (manual mode only):
+  // Only manual mode requires a threshold. In auto-detect mode a null raw threshold
+  // has already collapsed to 0 above, so effectiveThreshold is never null there and
+  // this guard never fires for auto-detect — the qualified message can still render
+  // (Finding A, Pass 3).
+  if (effectiveThreshold === null):   // implies !autoDetect && rawThreshold === null
+      console.warn('[free-shipping-progress] manual_threshold is unset, zero, or invalid in manual mode; rendering nothing.')
       -> STATE: { kind: "empty" }                       // render nothing
 
 STEP 2 — qualification:
@@ -259,19 +320,48 @@ STEP 2 — qualification:
       else:
           qualified = false
   else:
-      // Toggle OFF: manual comparison.
+      // Toggle OFF: manual comparison (effectiveThreshold is a positive number here).
       // total may be null if cost signal not ready; treat null total as 0 progress, not qualified.
       currentTotal = total ?? 0
-      qualified = currentTotal >= threshold
+      qualified = currentTotal >= effectiveThreshold
 
 STEP 3 — emit state:
   if (qualified):
       -> STATE: { kind: "qualified", emoji }
+
+  // Auto-detect dead-end guard (v1 decision: SUPPRESS).
+  // In auto-detect mode the progress math is driven by total vs effectiveThreshold,
+  // but qualification depends ONLY on a zero-cost delivery option existing. When the
+  // delivery groups HAVE been computed (groups non-empty), the customer's total already
+  // meets/exceeds effectiveThreshold, yet NO zero-cost option is present (a legitimate
+  // config: the store's real free-ship rule is higher than the manual knob, or free
+  // shipping isn't configured at all), the "below" math would clamp remaining to $0.00
+  // and the bar to 99% — rendering the confusing "$0.00 away from free shipping"
+  // dead-end. v1 behavior: render nothing. The extension has no honest, non-misleading
+  // thing to say in this state.
+  //
+  // Finding B (Pass 3): the guard is scoped to `groups.length > 0` so it ONLY fires
+  // once delivery options are resolved. Before the customer enters an address
+  // (groups empty), the §6 edge table promises a below-state progress bar even when
+  // total >= threshold, and this guard must NOT swallow that pre-address state.
+  if (autoDetect === true && groups.length > 0 && (total ?? 0) >= effectiveThreshold):
+      -> STATE: { kind: "empty" }                       // render nothing (suppress dead-end)
+
+  // No-threshold-to-render guard (auto-detect, blank threshold — Finding A).
+  // In auto-detect mode with a blank threshold (effectiveThreshold === 0) the customer
+  // is not yet qualified (no zero-cost option) and there is no meaningful fill target.
+  // A 0 threshold would make the "below" math divide by zero / show "$0.00 away" at
+  // 99%. There is nothing honest to show, so hide the bar — but note STEP 1 was NOT
+  // triggered, so the qualified message can still appear once a zero-cost option does.
+  if (effectiveThreshold === 0):
+      -> STATE: { kind: "empty" }                       // render nothing (no fill target)
+
   else:
+      // effectiveThreshold is a positive number here.
       currentTotal = total ?? 0
-      remainingNum = clamp(threshold - currentTotal, 0, threshold)
+      remainingNum = clamp(effectiveThreshold - currentTotal, 0, effectiveThreshold)
       // percent fill: cap at 99 so the bar never reads "100%" while below qualified.
-      rawPercent   = (currentTotal / threshold) * 100
+      rawPercent   = (currentTotal / effectiveThreshold) * 100
       percent      = clamp(Math.round(rawPercent), 0, 99)
       -> STATE: {
            kind: "below",
@@ -281,21 +371,34 @@ STEP 3 — emit state:
          }
 ```
 
+> **Note on the suppression guard placement and scope:** it is positioned *after* the
+> `qualified` short-circuit, so it only fires in auto-detect mode when the customer
+> is at/over the threshold but no zero-cost option exists. It is also scoped to
+> `groups.length > 0` (Finding B, Pass 3) so it never fires before the customer has
+> entered an address — the pre-address below-state progress bar promised by the edge
+> table is preserved. In manual mode (`autoDetect === false`) the `qualified` branch
+> already fires at `currentTotal >= effectiveThreshold`, so the guard's
+> `autoDetect === true` condition makes it a no-op there — manual mode never reaches
+> "below" with `total >= threshold`.
+
 ### Edge / misconfiguration cases (all handled above)
 
 | Case | Resolution |
 | :--- | :--- |
 | Cart empty (`lines.length === 0`) | State 1 (render nothing). |
-| `manual_threshold` unset / 0 / non-numeric | `console.warn('[free-shipping-progress] ...')`, render nothing. |
-| Toggle ON, `deliveryGroups` empty (no address yet) | State 2, progress vs `manual_threshold`. |
+| Manual mode, `manual_threshold` unset / 0 / non-numeric | `console.warn('[free-shipping-progress] ...')`, render nothing (STEP 1). |
+| Auto-detect mode, `manual_threshold` unset / 0 / non-numeric | `effectiveThreshold === 0`. STEP 1 does **not** fire — the qualified message can still render. If no zero-cost option exists yet, render nothing (no fill target); once a zero-cost option appears, State 3 (qualified). **(Finding A, Pass 3.)** |
+| Toggle ON, `deliveryGroups` empty (no address yet), `total < threshold` | State 2 (below), progress vs `manual_threshold`. |
+| **Toggle ON, `deliveryGroups` empty (no address yet), `total >= threshold`** | **State 2 (below), progress vs `manual_threshold` — clamps to a near-full bar. The suppression guard does NOT fire here because it requires `groups.length > 0` (Finding B, Pass 3). The customer sees a below-state bar until delivery options resolve.** |
 | Toggle ON, options exist, at least one zero-cost | State 3 (qualified). |
 | Toggle ON, options exist, **all** zero-cost | State 3 (qualified) — covered by `.some(isZeroCost)`. |
-| Toggle ON, options exist, none zero-cost | State 2. |
+| Toggle ON, options exist (`groups.length > 0`), none zero-cost, `total < threshold` | State 2 (below). |
+| **Toggle ON, options computed (`groups.length > 0`), none zero-cost, `total >= threshold`** | **State 1 (render nothing). v1 decision: SUPPRESS the dead-end rather than show a misleading "$0.00 away from free shipping" bar at 99%. The extension has nothing honest to show — no zero-cost option exists, so it cannot truthfully claim the customer qualifies, and the threshold knob can't drive a meaningful "away" figure. See STEP 3 suppression guard, which is scoped to `groups.length > 0` (Finding B, Pass 3).** |
 | Toggle OFF, `total >= threshold` | State 3 (qualified). |
 | Toggle OFF, `total < threshold` | State 2. |
-| `total` signal not yet populated | Treated as `0` → State 2 at 0% (never crashes). |
+| `total` signal not yet populated | Treated as `0` → State 2 at 0% (never crashes), unless `effectiveThreshold === 0` (auto-detect, blank threshold) → State 1. |
 | `progress_bar_tone` unset/invalid | Falls back to `auto` (`resolveTone`; MCP-2). |
-| `qualified_emoji` unset/non-string | Falls back to `🎉`. |
+| `qualified_emoji` unset/blank/non-string | Falls back to `🎉` (`resolveEmoji`; §8). |
 
 ---
 
@@ -392,22 +495,10 @@ hardcoded strings in JSX.
 }
 ```
 
-### [VERIFY MCP-3] — Currency formatting
+### MCP-3 resolved — Currency formatting
 
 The `remaining` value must be formatted respecting the checkout locale and
-currency. The expected call is:
-
-```js
-// verified MCP-3 + MCP-5: formatCurrency exists; Money.amount is a number (no conversion needed)
-function formatRemaining(amountNumber) {
-  const currency = shopify.cost.totalAmount.value.currencyCode; // verified MCP-5: Money.currencyCode (CurrencyCode string)
-  return shopify.i18n.formatCurrency(amountNumber, { currency }); // verified MCP-3: (number | bigint, Intl.NumberFormatOptions?) => string
-}
-```
-
-### MCP-3 resolved — currency formatting call signature
-
-Confirmed from `standard.d.ts` (lines 284–287):
+currency. Confirmed from `standard.d.ts` (lines 284–287):
 
 ```typescript
 formatCurrency: (number: number | bigint, options?: {
@@ -416,21 +507,32 @@ formatCurrency: (number: number | bigint, options?: {
 ```
 
 - Method name: `shopify.i18n.formatCurrency` — confirmed (not `formatNumber`, not `currency`).
-- `amount` argument: `number | bigint`. `Money.amount` is already a `number` (MCP-5), so no `Number()` conversion is needed in `formatRemaining`.
+- `amount` argument: `number | bigint`. `Money.amount` is already a `number` (MCP-5), so no `Number()` conversion is needed.
 - `currency` option comes from `Intl.NumberFormatOptions.currency` (ISO 4217 string from `Money.currencyCode`).
 - Note: the MCP best-practices guide mentioned `formatNumber()` for "currency formatting" — that is generic advice. The dedicated `formatCurrency` method (which sets `style: 'currency'` internally) is the correct choice here.
+
+```js
+// verified MCP-3 + MCP-5: formatCurrency exists; Money.amount is a number (no conversion needed)
+function formatRemaining(amountNumber) {
+  const currency = shopify.cost.totalAmount.value.currencyCode; // verified MCP-5: Money.currencyCode (CurrencyCode string)
+  return shopify.i18n.formatCurrency(amountNumber, { currency }); // (number | bigint, Intl.NumberFormatOptions?) => string
+}
+```
 
 ### Blank `qualified_emoji` / leading-space handling
 
 `qualifiedMessage` is `"{{emoji}} You qualify..."` with a literal space after the
 interpolation. If the merchant leaves `qualified_emoji` blank, the rendered string
-would start with a leading space (`" You qualify..."`). Mitigation in code:
+would start with a leading space (`" You qualify..."`). Mitigation in code — the
+single authoritative `resolveEmoji` helper (Section 6) is used everywhere emoji
+defaulting happens; do NOT inline a weaker `typeof === "string"` check:
 
 ```js
-const rawEmoji = settings.qualified_emoji;
-const emoji = (typeof rawEmoji === "string" && rawEmoji.trim() !== "")
-  ? rawEmoji.trim()
-  : "🎉";
+// resolveEmoji (defined once in Section 6 — restated here for context):
+function resolveEmoji(raw) {
+  return (typeof raw === "string" && raw.trim() !== "") ? raw.trim() : "🎉";
+}
+const emoji = resolveEmoji(settings.qualified_emoji);
 ```
 
 Because the default `🎉` is always substituted when blank/whitespace, the leading
@@ -444,9 +546,9 @@ translation template itself — Spanish and future locales rely on it.)
 | Setting key | Type | Drives | Code default (applied in `resolveState`, not TOML) |
 | :--- | :--- | :--- | :--- |
 | `use_shopify_free_shipping_rate` | `boolean` | Selects qualification mode (auto-detect vs manual). | `true` — treat unset as `true` (`=== true` would make unset `false`; instead use `settings.use_shopify_free_shipping_rate !== false` so unset/`true` → auto-detect, only explicit `false` → manual). |
-| `manual_threshold` | `number_decimal` | Progress-bar fill target in both modes; qualified detection in manual mode. | None — if unset/invalid → `console.warn` + render nothing (Section 6 Step 1). |
+| `manual_threshold` | `number_decimal` | Progress-bar fill target in both modes; qualified detection in manual mode only. | **Mode-dependent (Finding A, Pass 3):** in manual mode, required — if unset/invalid → `console.warn` + render nothing (STEP 1). In auto-detect mode, optional — a null raw threshold collapses to `0` (`effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold`); STEP 1 is skipped so the qualified message can still render; the below-state bar is hidden when `effectiveThreshold === 0`. |
 | `progress_bar_tone` | `single_line_text_field` (verified MCP-1: `choice` not supported at 2026-04) | `s-progress` `tone` attribute. Note: `s-progress` only accepts `'auto'` \| `'critical'` (MCP-2); `ALLOWED_TONES` and fallback updated accordingly. | `auto` (via `resolveTone`). |
-| `qualified_emoji` | `single_line_text_field` | Emoji in `qualifiedMessage`. | `🎉` (when blank/whitespace/non-string). |
+| `qualified_emoji` | `single_line_text_field` | Emoji in `qualifiedMessage`. | `🎉` (via `resolveEmoji`, when blank/whitespace/non-string). |
 
 > Default-handling subtlety for the boolean: the brief default is `true`. Since
 > TOML cannot set defaults, an unconfigured boolean may arrive as `undefined`.
@@ -469,7 +571,7 @@ render, which is what makes the component update reactively.
 | :--- | :--- |
 | `shopify.cartLines.value` | Detect empty cart (State 1); presence of items gates rendering. |
 | `shopify.cost.totalAmount.value` | Current cart total (post-discount) for manual-mode qualification and progress fill. Verified MCP-5: `shopify.cost` is `CartCost` (plain object); `CartCost.totalAmount` is `SubscribableSignalLike<Money>`; access via `shopify.cost.totalAmount.value`. `Money = { amount: number, currencyCode: CurrencyCode }` — `amount` is a JS number. |
-| `shopify.deliveryGroups.value` | Auto-detect mode: scan delivery options for a zero-cost (free) shipping option. |
+| `shopify.deliveryGroups.value` | Auto-detect mode: scan delivery options for a zero-cost (free) shipping option. Each `ShippingOption`/`PickupPointOption` exposes `cost` (pre-shipping-discount price, standard.d.ts:1557–1560) and `costAfterDiscounts` (buyer-paid price after shipping discounts, standard.d.ts:1561–1564); `isZeroCost` tests `costAfterDiscounts` first (falling back to `cost`) so discount-driven free shipping is detected (Pass 4 finding). The `groups.length > 0` precondition also scopes the suppression guard (Finding B). |
 | `shopify.settings.value` | Read the four merchant settings. Guard with `?? {}` (see Section 9) — the signal may be `undefined` before hydration. |
 | `shopify.i18n.translate(...)` | Resolve all user-facing strings. |
 | `shopify.i18n.formatCurrency(amount, { currency })` | Format the `remaining` amount in checkout currency/locale. Verified MCP-3: `(number \| bigint, Intl.NumberFormatOptions?) => string`. |
@@ -527,7 +629,13 @@ size well under the ~100KB compressed budget (target <50KB — Section 12).
 2. **Toggle ON, no zero-cost option** (manual_threshold 50.00, $20 cart, address
    filled) → bar ~40%, message "$30.00 away from free shipping".
 3. **Toggle ON, zero-cost option appears** (cart pushed over the store's free-ship
-   rule) → qualified message, no bar.
+   rule) → qualified message, no bar. **The dev-store free-shipping rule used here
+   MUST be a discount-driven rule — a Shopify shipping discount / automatic "free
+   shipping over $X" rule that zeroes `costAfterDiscounts` while leaving `cost`
+   positive — NOT a flat-$0 shipping rate.** This is the configuration most merchants
+   actually use, and it is the case that exercises the `costAfterDiscounts` detection
+   path (Pass 4 finding). Confirm detection fires on `costAfterDiscounts`; a flat-$0
+   rate would mask a regression if the predicate were ever reverted to `cost`-only.
 4. **Toggle OFF, below threshold** (threshold 100.00, $20 cart) → bar ~20%,
    message "$80.00 away from free shipping".
 5. **Toggle OFF, at threshold** → qualified message.
@@ -543,8 +651,40 @@ size well under the ~100KB compressed budget (target <50KB — Section 12).
 9. **Locale switching** → Spanish checkout shows Spanish strings.
 10. **Mobile viewport (375px)** → no overflow.
 11. **Console** → no JS errors, no Preact warnings, no Polaris component validation
-    errors. Misconfig (threshold unset) emits exactly one
-    `[free-shipping-progress]` warning and renders nothing.
+    errors. Manual-mode misconfig (auto-detect OFF, threshold unset) emits exactly
+    one `[free-shipping-progress]` warning and renders nothing.
+12. **Auto-detect dead-end suppression** (the §6 SUPPRESS edge) → set `manual_threshold`
+    to a value the cart *exceeds* (e.g. threshold 25.00, $40 cart), keep auto-detect
+    **ON**, and reach a state where delivery groups are computed (address filled) but
+    **no zero-cost delivery option** is offered (i.e. the dev store's real free-shipping
+    rule is not satisfied / not configured for this cart). Expected: the extension
+    **renders nothing** — it must NOT show a 99%-filled bar reading "$0.00 away from
+    free shipping." Confirm no JS errors and no console warning (this is a normal
+    suppressed state, not a misconfiguration; only the manual-mode threshold-unset case
+    in check 11 warns). To contrast, satisfy the dev store's free-shipping rule with a
+    zero-cost option available and confirm the qualified message (State 3) appears
+    instead. **The free-shipping rule used for that contrast step MUST be a
+    discount-driven rule (a Shopify shipping discount / "free shipping over $X" rule
+    that zeroes `costAfterDiscounts`), NOT a flat-$0 shipping rate** — a flat-$0 rate
+    would still register via the `cost` fallback and would therefore mask a regression
+    if the `costAfterDiscounts` detection were broken (Pass 4 finding).
+13. **Auto-detect + blank threshold** (the §6 Finding-A edge) → enable auto-detect
+    (toggle **ON**) and leave `manual_threshold` blank. (a) With an address filled and a
+    **zero-cost** delivery option available, confirm the **qualified message (State 3)
+    renders** — the blank threshold must NOT disable the feature, and there must be NO
+    `[free-shipping-progress]` console warning. (b) With no zero-cost option yet (or no
+    address), confirm the extension **renders nothing** (no progress bar — there is no
+    fill target) and still emits NO console warning. Contrast with check 11: a blank
+    threshold in *manual* mode (toggle OFF) DOES warn and render nothing; a blank
+    threshold in *auto-detect* mode does neither.
+14. **Auto-detect, over threshold, pre-address** (the §6 Finding-B edge) → enable
+    auto-detect, set `manual_threshold` to a value the cart *exceeds* (e.g. threshold
+    25.00, $40 cart), but do **not** enter an address (so `deliveryGroups` is empty).
+    Expected: the extension shows a **below-state progress bar** (near-full / clamped to
+    99%), NOT a suppressed/blank render — the suppression guard requires
+    `groups.length > 0` and must not fire before the address resolves. Then fill the
+    address so delivery options compute with no zero-cost option, and confirm the
+    extension transitions to the suppressed (render-nothing) state from check 12.
 
 ### Behavioral edges (QA awareness — correct per spec, not bugs)
 
@@ -553,10 +693,12 @@ explicitly verified by QA as designed, not flagged as defects:
 
 **$0 cart total (fully discounted, non-empty cart):** A cart with one or more line
 items whose total has been fully discounted to $0.00 renders **State 2 (below
-threshold) at 0% fill**, NOT State 3 (qualified) and NOT State 1 (empty). State 1
-is triggered by `cartLines.length === 0` only; State 3 requires either a zero-cost
-delivery option (auto-detect) or `total >= threshold` (manual). A $0 total
-satisfies neither when `threshold > 0`.
+threshold) at 0% fill**, NOT State 3 (qualified) and NOT State 1 (empty) — *provided
+a positive threshold is configured*. State 1 is triggered by `cartLines.length === 0`
+only; State 3 requires either a zero-cost delivery option (auto-detect) or
+`total >= threshold` (manual). A $0 total satisfies neither when `effectiveThreshold > 0`.
+(If `effectiveThreshold === 0` in auto-detect mode — blank threshold — the below-state
+bar is hidden per the Finding-A no-fill-target guard.)
 
 **Auto-detect qualifies on option availability, not selection:** In auto-detect
 mode, the extension treats the **existence** of any zero-cost delivery option in
@@ -564,6 +706,26 @@ mode, the extension treats the **existence** of any zero-cost delivery option in
 paid option selected. Qualification responds to what is *available*, not what is
 *chosen*. This is intentional: the goal is to communicate eligibility ("you CAN
 get free shipping"), not the current selection.
+
+**Auto-detect "$0.00 away" dead-end is suppressed, not rendered (v1 decision):** In
+auto-detect mode, when delivery groups are computed (`groups.length > 0`), the cart
+total already meets/exceeds `manual_threshold`, but no zero-cost delivery option
+exists, the extension **renders nothing** (State 1) — see the §6 SUPPRESS edge and
+STEP 3 guard. QA should confirm the extension is absent in this state (check 12),
+NOT flag the absence as a defect. This is a deliberate v1 choice: the threshold knob
+cannot honestly drive an "away" figure when it has already been exceeded, and the
+absence of a zero-cost option means the extension cannot truthfully claim the
+customer qualifies. Rendering nothing is the honest outcome. (A future API version
+that exposes the merchant's real free-shipping threshold could revisit this — see §2
+non-goals.)
+
+**Auto-detect + blank threshold is honored, not disabled (v1 decision, Finding A):**
+In auto-detect mode the threshold is optional. A blank `manual_threshold` does NOT
+trigger the manual-mode misconfig warning and does NOT disable the feature — the
+qualified message still renders once a zero-cost option appears, and only the
+below-state progress bar is hidden (no fill target). QA should confirm the qualified
+message appears and that no console warning is emitted (check 13), NOT flag the
+missing progress bar as a defect.
 
 ---
 
@@ -575,8 +737,8 @@ Target <50KB compressed is achievable:
   and `preact` (already in `package.json`); Polaris `s-*` components are provided by
   the runtime and are not bundled.
 - All logic is small inline pure functions (`toPositiveNumber`, `clamp`,
-  `resolveTone`, `isZeroCost`, `resolveState`, `formatRemaining`) — no utility
-  libraries.
+  `resolveTone`, `resolveEmoji`, `isZeroCost`, `resolveState`, `formatRemaining`) — no
+  utility libraries.
 - Three locale JSON files are tiny (three keys each; `fr.json` deleted reduces
   bundle slightly vs the scaffold).
 - No images, no fonts, no animation libraries.
@@ -597,29 +759,46 @@ Run `shopify app build` and record the reported bundle size in the impl notes.
    - MCP-1: `choice` not supported → `single_line_text_field` for `progress_bar_tone`.
    - MCP-2: `tone` is `'auto' | 'critical'`; `accessibilityLabel` attribute; value/max are arbitrary floats.
    - MCP-3: `shopify.i18n.formatCurrency(number | bigint, Intl.NumberFormatOptions?) => string`.
-   - MCP-4: `group.deliveryOptions`; `option.cost?.amount === 0` (number); PickupLocationOption has no cost.
+   - MCP-4: `group.deliveryOptions`; `(option.costAfterDiscounts ?? option.cost)?.amount === 0` (tests buyer-paid price after shipping discounts, falls back to `cost` for flat-$0 rates; number); PickupLocationOption has neither cost field.
    - MCP-5: `shopify.cost.totalAmount.value.amount` (number); `shopify.cost.totalAmount.value.currencyCode`.
 2. **Settings TOML.** Edit `shopify.extension.toml`: add `[extensions.settings]`
-   with the four fields (Section 5), using the MCP-confirmed `progress_bar_tone`
-   Use `single_line_text_field` for `progress_bar_tone` (MCP-1 resolved). Remove the scaffolded `[[extensions.metafields]] requestedFreeGift`
-   block. Leave `api_version`, targeting, and `api_access` unchanged.
-   Run `shopify app build`.
+   with the four fields (Section 5), using `single_line_text_field` for
+   `progress_bar_tone` (MCP-1 resolved). Use the Section 5 `description` copy for
+   `use_shopify_free_shipping_rate` and `manual_threshold` verbatim — it now honestly
+   states that the threshold is optional in auto-detect mode (Finding A, Pass 3).
+   Remove the scaffolded `[[extensions.metafields]] requestedFreeGift` block. Leave
+   `api_version`, targeting, and `api_access` unchanged. Run `shopify app build`.
 3. **Locales.** Rewrite `locales/en.default.json` (Section 8 English), create
    `locales/es.json` (Section 8 Spanish), delete `locales/fr.json`.
    Run `shopify app build`.
 4. **Pure helpers.** In `src/Checkout.jsx`, add `toPositiveNumber`, `clamp`,
-   `ALLOWED_TONES`, `resolveTone`, and `isZeroCost` (with the MCP-confirmed cost
-   path) as inline pure functions.
+   `ALLOWED_TONES`, `resolveTone`, `resolveEmoji`, and `isZeroCost` (with the
+   MCP-confirmed cost path — test `(option.costAfterDiscounts ?? option.cost)?.amount
+   === 0`, NOT `cost` alone, so discount-driven free shipping is detected; Pass 4
+   finding) as inline pure functions. Use `resolveEmoji` as the
+   single source of truth for emoji defaulting — do not inline a weaker
+   `typeof === "string"` check anywhere.
 5. **State resolver.** Implement `resolveState()` returning the tagged union
-   (`empty | qualified | below`) per the Section 6 decision tree, including the
-   settings null guard (`shopify.settings.value ?? {}`), the boolean-default
-   subtlety (`!== false`), the misconfig `console.warn`, the empty-`deliveryGroups`
-   handling, and the `percent` clamp to 0–99.
+   (`empty | qualified | below`) per the Section 6 decision tree, including:
+   - the settings null guard (`shopify.settings.value ?? {}`),
+   - the boolean-default subtlety (`!== false`),
+   - **the mode-dependent effective threshold:
+     `effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold` (Finding A,
+     Pass 3) — null in manual mode only,**
+   - **the manual-mode-only misconfig `console.warn` (STEP 1 fires only when
+     `effectiveThreshold === null`, i.e. manual mode with an unset threshold),**
+   - the empty-`deliveryGroups` handling,
+   - **the auto-detect "$0.00 away" suppression guard scoped to `groups.length > 0`
+     (STEP 3: `autoDetect === true && groups.length > 0 && (total ?? 0) >= effectiveThreshold`
+     → `{ kind: "empty" }`) (Finding B, Pass 3),**
+   - **the no-fill-target guard for auto-detect + blank threshold (`effectiveThreshold === 0`
+     → `{ kind: "empty" }`) (Finding A, Pass 3),**
+   - and the `percent` clamp to 0–99 (computed only when `effectiveThreshold > 0`).
 6. **Currency formatter.** Implement `formatRemaining` using the MCP-confirmed
    `shopify.i18n.formatCurrency` signature and the confirmed `currencyCode` path.
 7. **Component render.** Rewrite `Extension` to call `resolveState()` and switch on
    `kind`: `null` for empty; `s-stack` + `s-text` + `s-progress` (with confirmed
-   `tone`/value/`aria-label` attributes) for below; `s-text` for qualified. Keep
+   `tone`/value/`accessibilityLabel` attributes) for below; `s-text` for qualified. Keep
    the entry export shape (`render(<Extension />, document.body)`). Remove all
    scaffolded metafield/instruction/checkbox code.
 8. **Pre-save audit (CLAUDE.md §9).** Confirm: only `s-*` components in JSX; all
@@ -634,3 +813,20 @@ Run `shopify app build` and record the reported bundle size in the impl notes.
 10. **Commit.** `feat(free-shipping-progress): free-shipping progress bar with
     auto-detect/manual modes and en/es locales`.
 ```
+
+---
+
+## Sign-off
+
+**Architect:** Approved (drafting, response to Plan-Reviewer first-pass
+findings, polish pass, response to subsequent findings across
+five review iterations).
+
+**Plan-Reviewer:** APPROVED — 2026-06-11.
+
+Review artifact: `docs/reviews/free-shipping-progress-review.md`
+(commit hash will be added on commit).
+
+This plan is cleared for /implement. No further changes should be made
+to this plan document unless a defect surfaces during implementation
+or QA that requires plan-level escalation.
