@@ -42,7 +42,7 @@ What **is** confirmed from on-disk ground truth (do not re-question):
   `document.body` via an exported `async () => { render(<Extension />, document.body) }`.
 - Data is exposed as **Preact signals** read through `.value`. The scaffold uses
   `shopify.instructions.value...` and `shopify.appMetafields.value`. By the same
-  pattern: `shopify.cartLines.value`, `shopify.deliveryGroups.value`,
+  pattern: `shopify.lines.value`, `shopify.deliveryGroups.value`,
   `shopify.settings.value`. Note: `shopify.cost` is a plain `CartCost` object (not
   a signal itself); its individual fields are signals, e.g.
   `shopify.cost.totalAmount.value` (confirmed MCP-5).
@@ -88,7 +88,7 @@ the Checkout API does not expose the merchant's real free-shipping threshold val
   via the checkout editor.
 - **API surface provided at this target** (typed via
   `@shopify/ui-extensions/purchase.checkout.block.render`): the reactive `shopify`
-  signals object including `shopify.cartLines`, `shopify.cost`,
+  signals object including `shopify.lines`, `shopify.cost`,
   `shopify.deliveryGroups`, `shopify.settings`, `shopify.shippingAddress`, plus
   `shopify.i18n` (translate + currency formatting) and `shopify.extension`.
 - **Data-availability caveat:** `shopify.deliveryGroups` is typically empty until
@@ -284,7 +284,7 @@ effectiveThreshold = autoDetect ? (rawThreshold ?? 0) : rawThreshold
 
 ```
 INPUTS (all via .value):
-  lines        = shopify.cartLines.value            // array
+  lines        = shopify.lines.value                // array
   total        = toPositiveNumber(shopify.cost.totalAmount.value.amount)  // verified MCP-5: shopify.cost is CartCost (plain object); totalAmount is the signal; Money.amount is a number
   groups       = shopify.deliveryGroups.value ?? [] // array
   settings     = shopify.settings.value ?? {}
@@ -569,7 +569,7 @@ render, which is what makes the component update reactively.
 
 | Accessor | Why |
 | :--- | :--- |
-| `shopify.cartLines.value` | Detect empty cart (State 1); presence of items gates rendering. |
+| `shopify.lines.value` | Detect empty cart (State 1); presence of items gates rendering. (`cartLines` does not exist at `api_version = "2026-04"` — confirmed via QA bug `cartlines-vs-lines-signal-name`.) |
 | `shopify.cost.totalAmount.value` | Current cart total (post-discount) for manual-mode qualification and progress fill. Verified MCP-5: `shopify.cost` is `CartCost` (plain object); `CartCost.totalAmount` is `SubscribableSignalLike<Money>`; access via `shopify.cost.totalAmount.value`. `Money = { amount: number, currencyCode: CurrencyCode }` — `amount` is a JS number. |
 | `shopify.deliveryGroups.value` | Auto-detect mode: scan delivery options for a zero-cost (free) shipping option. Each `ShippingOption`/`PickupPointOption` exposes `cost` (pre-shipping-discount price, standard.d.ts:1557–1560) and `costAfterDiscounts` (buyer-paid price after shipping discounts, standard.d.ts:1561–1564); `isZeroCost` tests `costAfterDiscounts` first (falling back to `cost`) so discount-driven free shipping is detected (Pass 4 finding). The `groups.length > 0` precondition also scopes the suppression guard (Finding B). |
 | `shopify.settings.value` | Read the four merchant settings. Guard with `?? {}` (see Section 9) — the signal may be `undefined` before hydration. |
@@ -694,7 +694,7 @@ explicitly verified by QA as designed, not flagged as defects:
 **$0 cart total (fully discounted, non-empty cart):** A cart with one or more line
 items whose total has been fully discounted to $0.00 renders **State 2 (below
 threshold) at 0% fill**, NOT State 3 (qualified) and NOT State 1 (empty) — *provided
-a positive threshold is configured*. State 1 is triggered by `cartLines.length === 0`
+a positive threshold is configured*. State 1 is triggered by `lines.length === 0`
 only; State 3 requires either a zero-cost delivery option (auto-detect) or
 `total >= threshold` (manual). A $0 total satisfies neither when `effectiveThreshold > 0`.
 (If `effectiveThreshold === 0` in auto-detect mode — blank threshold — the below-state
@@ -830,3 +830,20 @@ Review artifact: `docs/reviews/free-shipping-progress-review.md`
 This plan is cleared for /implement. No further changes should be made
 to this plan document unless a defect surfaces during implementation
 or QA that requires plan-level escalation.
+
+### Post-sign-off correction — 2026-06-11 (QA bug: `cartlines-vs-lines-signal-name`)
+
+**Bug surfaced during QA:** `shopify.cartLines` does not exist at `api_version = "2026-04"`. The correct signal name is `shopify.lines` (`SubscribableSignalLike<CartLine[]>`, `standard.d.ts:602`). The extension crashed on every render because the Coder followed the plan's §10 signal inventory faithfully, and that inventory named the wrong accessor.
+
+**Root cause of the plan error:** The older React + hooks Checkout UI Extension API exposed cart lines via `useCartLines()`. That naming leaked into the plan's §10 and into `CLAUDE.md`'s Data Access section without being caught across five review passes (the Plan-Reviewer verified signal paths against the installed types for `cost`, `deliveryGroups`, and `settings`, but did not independently verify `cartLines`).
+
+**Affected references corrected in this document:**
+- §3 signal-pattern example: `shopify.cartLines.value` → `shopify.lines.value`
+- §4 API surface list: `shopify.cartLines` → `shopify.lines`
+- §6 decision tree INPUTS block: `shopify.cartLines.value` → `shopify.lines.value`
+- §10 signal inventory table row header: `shopify.cartLines.value` → `shopify.lines.value` (with bug reference note)
+- §11 behavioral edge note: `cartLines.length === 0` → `lines.length === 0`
+
+**Also corrected:** `CLAUDE.md` Data Access section and §5 signal inventory — all five `cartLines` occurrences replaced with `lines`, plus an inline note explaining the React/hooks naming confusion.
+
+**Source code fix:** `extensions/free-shipping-progress/src/Checkout.jsx:84` — handled by the Coder in the subsequent `/implement` step per the QA report at `docs/qa/free-shipping-progress-report.md`.

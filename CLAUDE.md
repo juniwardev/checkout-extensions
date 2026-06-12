@@ -13,7 +13,7 @@ This project uses the Claude Squad workflow. Agents at `~/.claude/agents/` and s
 - **Framework:** Shopify Checkout UI Extensions, `api_version = "2026-04"`. Renders Polaris web components (`s-*` elements) via Preact. NOT React. NOT `@shopify/ui-extensions-react/checkout`.
 - **Language:** TypeScript (`.tsx`). Preact's JSX runtime is in use; standard TSX syntax applies but React-specific imports (`useState`, `useEffect` from `react`) are NOT available — use Preact's equivalents from `preact/hooks` if reactive local state is needed.
 - **UI components:** Polaris web components served by Shopify's checkout component set. Common elements: `s-progress`, `s-box`, `s-stack`, `s-text`, `s-heading`, `s-banner`, `s-button`, etc. (See architectural directives below for the full inventory.)
-- **Data access:** Via the global `shopify` signals object available in the extension runtime. Examples: `shopify.cartLines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, `shopify.deliveryGroups`. Signals are reactive — components re-render when underlying values change.
+- **Data access:** Via the global `shopify` signals object available in the extension runtime. Examples: `shopify.lines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, `shopify.deliveryGroups`. Signals are reactive — components re-render when underlying values change.
 - **Shopify app structure:** This is a Shopify App (extension-only template, no Remix backend, no admin UI). The app contains one or more Checkout UI Extensions in the `extensions/` directory. Each extension is independently configured via `shopify.extension.toml`.
 - **Storefront target:** `theme-evolution-os2.myshopify.com` (the Liquid theme project's dev store — same store, separate app).
 - **Repo location:** `~/Projects/Shopify/checkout-extensions`
@@ -105,7 +105,7 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 
 - Plans must respect the Checkout UI Extension architectural directives at the bottom of this document. The sandboxed runtime + Polaris web components API is the single most important constraint.
 - Specify which **extension target** (or targets) the feature uses. Targets are configured in `shopify.extension.toml` under `[[extensions.targeting]]` and determine WHERE in the checkout flow the extension renders. The available targets are listed in the architectural directives below.
-- Plans MUST identify which `shopify` signals are needed (`shopify.cartLines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, etc.) and which Polaris web components will be used (`s-progress`, `s-box`, `s-text`, etc.).
+- Plans MUST identify which `shopify` signals are needed (`shopify.lines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, etc.) and which Polaris web components will be used (`s-progress`, `s-box`, `s-text`, etc.).
 - Plans must NOT propose using standard HTML elements (`<div>`, `<button>`, etc.) or React-style components (`<BlockStack>`, `<Text>` from `@shopify/ui-extensions-react/checkout`) — neither will render in this API version.
 - When in doubt about which signal path or component name to use, consult the Shopify Dev MCP for the actual `api_version = "2026-04"` surface. Do not infer from older tutorials.
 - Performance budget: any plan that significantly increases bundle size needs explicit justification. Default budget per extension is around 100KB compressed.
@@ -114,7 +114,7 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 
 - Apply adversarial scrutiny on sandbox compliance: are any browser APIs used? Are all data accesses going through `shopify` signals? Are all UI components Polaris web components (`s-*` elements)?
 - Verify the extension target specified in the plan actually exists and is available at `api_version = "2026-04"`. Use the Shopify Dev MCP to confirm if uncertain.
-- Verify specific component names (`s-progress`, `s-box`, etc.) and signal paths (`shopify.cartLines`, etc.) exist in this API version. Older tutorials reference React components and hooks that DO NOT EXIST here.
+- Verify specific component names (`s-progress`, `s-box`, etc.) and signal paths (`shopify.lines`, etc.) exist in this API version. Older tutorials reference React components and hooks that DO NOT EXIST here.
 - Demand that plans include i18n consideration: any user-facing string must use the localization API, not hardcoded text.
 - Demand that plans include `shopify app build` as a verification step (validates TypeScript + bundle size + sandbox compliance).
 
@@ -133,7 +133,7 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
   - React-style components from `@shopify/ui-extensions-react/checkout` (`<BlockStack>`, `<Text>`, `<Banner>`, etc.) — those are from an older API version not used in this project.
   - Imports from the `react` package — this is Preact, not React.
 - Access data via the `shopify` global signals object. Common accessors at `purchase.checkout.block.render`:
-  - `shopify.cartLines` — current line items (reactive)
+  - `shopify.lines` — current line items (reactive). **Note:** the correct name at `api_version = "2026-04"` is `lines`, not `cartLines`. The older React + hooks API used `useCartLines()`, which is the source of this common confusion — `cartLines` does not exist on the `shopify` signals object.
   - `shopify.cost.totalAmount` — cart total (reactive, respects discounts)
   - `shopify.cost.subtotalAmount` — pre-discount subtotal
   - `shopify.shippingAddress`, `shopify.billingAddress` — addresses
@@ -281,7 +281,7 @@ These components are styled by Shopify and adapt to the merchant's checkout them
 All data flows through a global `shopify` object whose properties are reactive signals. Components automatically re-render when accessed signals change. Common accessors at `purchase.checkout.block.render` (verify against Shopify Dev MCP for the specific target's surface):
 
 - **Cart state (reactive):**
-  - `shopify.cartLines` — current line items
+  - `shopify.lines` — current line items (`cartLines` does not exist at this api_version)
   - `shopify.cost.totalAmount` — total in display currency, post-discount
   - `shopify.cost.subtotalAmount` — pre-discount subtotal
   - `shopify.cost.totalTaxAmount`, `shopify.cost.totalShippingAmount` — component costs
