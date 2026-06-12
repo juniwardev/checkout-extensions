@@ -81,7 +81,7 @@ function resolveState() {
   const settings = shopify.settings.value ?? {};
 
   // --- Read all signals ---
-  const lines  = shopify.cartLines.value;
+  const lines  = shopify.lines.value;
   // verified MCP-5: shopify.cost is a plain CartCost object (not a signal);
   // totalAmount is the signal within it. Money.amount is a JS number.
   const moneySignal = shopify.cost.totalAmount.value;
