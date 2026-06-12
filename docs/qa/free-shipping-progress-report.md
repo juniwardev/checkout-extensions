@@ -378,3 +378,20 @@ The NITs:
 1. **Checks 3, 5, 6, 7, 12, 13 not dynamically confirmed** (LOW severity). Cloudflare bot protection blocked Playwright from reaching the checkout form-fill step in all but the first browser context. These checks were verified via static code analysis and the logic is correct, but a human operator should walk through the full shipping-rate and qualified-state flow manually (entering an address, triggering shipping rate computation, and confirming suppression vs. qualified states) before approving for production deploy. This is a test-infrastructure limitation, not a code defect.
 
 2. **`progress_bar_tone` setting documentation** (NIY, informational). The setting accepts freeform text; a merchant entering `"success"` or `"primary"` would silently fall back to `"auto"`. This is correct per the plan (`resolveTone` fallback), but the checkout editor description copy ("One of: auto, critical") is the only guard. Shopify's settings UI does not enforce the constraint at input time. Not a defect — it was a deliberate choice made in the plan.
+
+---
+
+## Manual operator verification — 2026-06-11
+
+The four shipping-rate-dependent scenarios that Cloudflare bot protection blocked Playwright from confirming were manually walked by the operator in a real browser session against the dev store. All four behaved as specified in the plan.
+
+| Check | Scenario | Result |
+| :--- | :--- | :--- |
+| 3 | Auto-detect mode + active free-shipping discount + cart over discount minimum → qualified state ("You qualify for free shipping!") shows, no progress bar | PASS |
+| 5 | Manual mode + cart total >= manual_threshold → qualified state shows | PASS |
+| 12 | Auto-detect mode + cart above manual_threshold + no zero-cost shipping option available → extension renders nothing (suppression guard fires correctly) | PASS |
+| 13 | Tone customization: auto = blue, critical = red, invalid value (e.g. "success") silently falls back to auto with no console errors | PASS |
+
+Console verification: no extension-originated errors. All console messages observed during testing were baseline Shopify checkout/Shop Pay framework noise unrelated to the free-shipping-progress extension.
+
+Operator is satisfied the extension is production-ready for v1 scope.
