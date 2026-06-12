@@ -1,0 +1,5 @@
+{
+  "progressMessage": "Te faltan {{remaining}} para envío gratis",
+  "qualifiedMessage": "{{emoji}} ¡Has obtenido envío gratis!",
+  "progressBarAriaLabel": "Progreso de envío gratis: {{percent}}% del umbral"
+}
