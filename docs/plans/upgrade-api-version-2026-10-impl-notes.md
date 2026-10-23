@@ -161,3 +161,16 @@ Not applicable (chore, not a `fix-` slug).
 ## Z4 result: BLOCKED by the permission system
 
 The attempt to run `shopify app dev` (backgrounded, output to a scratchpad log) was denied by the Claude Code auto-mode permission classifier (reason given: "Production Deploy", since the dev store is the live store). No `dev` process was started and nothing was written to the store. I did not try to work around the denial. Z4 and the Z7 hand-off to `/qa` remain open until the operator either runs `shopify app dev` themselves (then Z4.1 to Z4.3: stop without `dev clean`, run G-npm, require an empty `git status`, move the three app-home PNG copies aside) or adds a permission rule allowing it.
+
+## Z4 result (update, 2026-10-23)
+
+`shopify app dev` was permission-denied for agents, so the **operator ran it in their own terminal** (PID 98516). It was **left running for QA**; no `shopify app dev clean` was run (R13), and the preview stays on theme-evolution-os2.myshopify.com until O4b after release.
+
+Verified read-only by the coordinator at 15:43 PDT, and re-confirmed by the Coder (G-npm and `git status`, no shopify commands):
+- `.shopify/dev-bundle` written 15:42:20, with all three extension uids from the repo tomls bundled: app-tools (`app-tools.js`, tools.json, instructions.md), app-home (`app-home.js` + 3 PNG assets), free-shipping-progress (`free-shipping-progress.js`).
+- Install: "app dev running and bundled; install confirmation from operator terminal not captured". The preview URL was not captured.
+- G-npm: 5/5 OK.
+- `git status --porcelain` empty. No tracked file was rewritten; the three `shopify.d.ts` hashes are unchanged from the C1 to C3 values (app-home `6be4399d`, app-tools `24bd339d`, free-shipping-progress `56d3336d`). No PNG copies in `extensions/app-home/`.
+- R4: `shopify.app.toml` not rewritten.
+
+Z7: hand-off to `/qa upgrade-api-version-2026-10`. QA must treat the running dev session as the preview under test (AC-11 identity gate: tunnel-host bundle origin), must not stop it before finishing, and must not run `dev clean`.
