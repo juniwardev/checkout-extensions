@@ -41,7 +41,7 @@ Available commands:
 - `shopify app config push` — push local `shopify.app.toml` config to Shopify
 - `shopify app info` — show app metadata (org, client ID, scopes)
 
-Package manager: **pnpm** at the extension level (Shopify's default for extension scaffolding) and **npm** at the app root. Mixed package managers are normal in this project. Both lock files (`package-lock.json` at root, `pnpm-lock.yaml` in extension directories) should be committed.
+Package manager: **pnpm only.** The repo is a pnpm workspace (`pnpm-workspace.yaml` → `extensions/*`) with a single `pnpm-lock.yaml` at the repo root; commit it. Install dependencies with `pnpm install` from the repo root. Do not run `npm install` or `yarn` in this repo. The Shopify CLI picks its package manager from the lockfiles it finds: it checks `yarn.lock` first, then `pnpm-lock.yaml` / `pnpm-workspace.yaml`, and `package-lock.json` last. A stray `package-lock.json` is therefore never read and silently goes stale, while a stray `yarn.lock` takes precedence over pnpm and silently switches the CLI to yarn. Delete either one if it appears.
 
 ---
 
@@ -183,7 +183,7 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 - **`shopify.extension.toml` per extension** — these configure the extension target, settings schema, capabilities, and `api_version`. Edit when adding extension targets or merchant settings, but be deliberate. NEVER change `api_version` as a drive-by; the entire codebase is tuned for `2026-04`.
 - **`.shopify/`** directory — Shopify CLI internal state, do not commit or edit.
 - **Generated TypeScript declaration files** — regenerate via Shopify CLI rather than hand-editing.
-- **`package-lock.json` and `pnpm-lock.yaml`** — let the respective package managers manage these.
+- **`pnpm-lock.yaml`** — let pnpm manage it (`pnpm install`); never hand-edit it. This project has no `package-lock.json` or `yarn.lock`; if one appears, an npm or yarn command was run by mistake — delete it, do not commit it.
 - **Build artifacts** (`dist/`, `build/`, `.cache/`, `node_modules/`) — never commit, never edit.
 - **`.env` files** — never commit, never edit as part of a feature plan.
 
