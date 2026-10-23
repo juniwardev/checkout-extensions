@@ -26,7 +26,7 @@ export function getPrimedFAQ(id: string): FAQ | null {
 }
 
 function gqlFetch(query: string, variables?: Record<string, unknown>) {
-  return fetch("shopify:admin/api/2026-04/graphql.json", {
+  return fetch("shopify:admin/api/2026-10/graphql.json", {
     method: "POST",
     body: JSON.stringify({ query, variables }),
   }).then((r) => r.json());
