@@ -143,3 +143,21 @@ Not run. The plan requires the operator's O0 record before the first `shopify ap
 ## Bug fix verification approach
 
 Not applicable (chore, not a `fix-` slug).
+
+---
+
+## Addendum: operator decisions and O0 record (2026-10-23)
+
+**Decisions (from the user, via the coordinator):**
+1. Deviation 3 (E1(free-shipping-progress) loses the TS2882 diagnostic, nothing added) is **ACCEPTED** by the operator.
+2. Deviation 4 (`@shopify/ui-extensions@2026.10.0` stays in the lockfile; pnpm's release-age policy is not overridden) is **ACCEPTED** by the operator.
+
+**O0 record (given by the operator; no separate file):**
+- (a) Active version `checkout-extensions-2`, createdAt 2026-06-12 04:35:44 (`shopify app versions list --json`). `checkout-extensions-1` (2026-06-09) is inactive.
+- (b) Not confirmed in the dashboard; inferred from git history. The version was created between 32cac43 (2026-06-11 21:34 -0700) and 9196105 (21:45 -0700). At that point the repo had all three extensions (since cdfd6d7), `[metaobjects.app.faq]` with `[product.metafields.app.faq]`, and `include_config_on_deploy = true`. So the active version includes `$app:faq`, and the store has nothing the repo lacks. O0's stop condition does not fire.
+- (c) Dev Console preview state: unknown.
+- (d) FAQ count and questions: skipped (operator decision, 2026-10-23); O2(d) must still be recorded before release.
+
+## Z4 result: BLOCKED by the permission system
+
+The attempt to run `shopify app dev` (backgrounded, output to a scratchpad log) was denied by the Claude Code auto-mode permission classifier (reason given: "Production Deploy", since the dev store is the live store). No `dev` process was started and nothing was written to the store. I did not try to work around the denial. Z4 and the Z7 hand-off to `/qa` remain open until the operator either runs `shopify app dev` themselves (then Z4.1 to Z4.3: stop without `dev clean`, run G-npm, require an empty `git status`, move the three app-home PNG copies aside) or adds a permission rule allowing it.
