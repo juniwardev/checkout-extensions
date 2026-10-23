@@ -2,15 +2,15 @@
 
 This project uses the Claude Squad workflow. Agents at `~/.claude/agents/` and slash commands at `~/.claude/commands/` (global, shared across projects). Project-scoped agent overrides live in `.claude/agents/` within this repo. This file is the per-project context every agent reads at the start of work. `CLAUDE.md` (Claude Code) and `AGENTS.md` (OpenCode) are kept byte-identical for portability.
 
-🚨 **IF the Shopify Dev MCP is registered, call `learn_shopify_api` ONCE at the start of any work on this project**, targeting the Checkout UI Extensions surface (or the equivalent name the MCP exposes). This grounds the agent's knowledge in the actual `api_version = "2026-04"` API — Polaris web components (`s-*` elements) and the global `shopify` signals object — rather than relying on training data that leans heavily toward the older React + hooks Checkout UI Extensions API. The first feature plan in this project (`free-shipping-progress`) had to be reworked because the brief was written without this grounding step and referenced React-style components and hooks that do not exist at this `api_version`. Do not repeat that mistake.
+🚨 **IF the Shopify Dev MCP is registered, call `learn_shopify_api` ONCE at the start of any work on this project**, targeting the Checkout UI Extensions surface (or the equivalent name the MCP exposes). Pass the version explicitly (`version: "2026-10"`) to `learn_shopify_api` and `search_docs_chunks`: the MCP's default version can lag behind the latest stable release. This grounds the agent's knowledge in the actual `api_version = "2026-10"` API — Polaris web components (`s-*` elements) and the global `shopify` signals object — rather than relying on training data that leans heavily toward the older React + hooks Checkout UI Extensions API. The first feature plan in this project (`free-shipping-progress`) had to be reworked because the brief was written without this grounding step and referenced React-style components and hooks that do not exist at this `api_version`. Do not repeat that mistake.
 
-🚨 **Coder and Plan-Reviewer:** read this entire document before executing any code modifications. The architectural directives at the bottom are project-specific and non-negotiable. Checkout UI Extensions on `api_version = "2026-04"` use **Polaris web components rendered by Preact**, NOT React with hooks. Many assumptions from older Shopify React + hooks tutorials do not apply to this codebase.
+🚨 **Coder and Plan-Reviewer:** read this entire document before executing any code modifications. The architectural directives at the bottom are project-specific and non-negotiable. Checkout UI Extensions on `api_version = "2026-10"` use **Polaris web components rendered by Preact**, NOT React with hooks. Many assumptions from older Shopify React + hooks tutorials do not apply to this codebase.
 
 ---
 
 ## Project type and stack
 
-- **Framework:** Shopify Checkout UI Extensions, `api_version = "2026-04"`. Renders Polaris web components (`s-*` elements) via Preact. NOT React. NOT `@shopify/ui-extensions-react/checkout`.
+- **Framework:** Shopify Checkout UI Extensions, `api_version = "2026-10"`. Renders Polaris web components (`s-*` elements) via Preact. NOT React. NOT `@shopify/ui-extensions-react/checkout`.
 - **Language:** TypeScript (`.tsx`). Preact's JSX runtime is in use; standard TSX syntax applies but React-specific imports (`useState`, `useEffect` from `react`) are NOT available — use Preact's equivalents from `preact/hooks` if reactive local state is needed.
 - **UI components:** Polaris web components served by Shopify's checkout component set. Common elements: `s-progress`, `s-box`, `s-stack`, `s-text`, `s-heading`, `s-banner`, `s-button`, etc. (See architectural directives below for the full inventory.)
 - **Data access:** Via the global `shopify` signals object available in the extension runtime. Examples: `shopify.lines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, `shopify.deliveryGroups`. Signals are reactive — components re-render when underlying values change.
@@ -73,7 +73,7 @@ For local verification while developing:
 1. **Dev server smoke test:** `shopify app dev` runs without errors. All extensions bundle successfully (visible in the per-extension build log).
 2. **App installation check:** Open the preview URL printed by `shopify app dev`. The app installs on `theme-evolution-os2.myshopify.com` without errors. Required scopes are auto-granted.
 3. **Checkout render check:** Open the dev store storefront → add a product to cart → go to checkout → confirm the extension renders at its target location with no JavaScript errors in the browser console.
-4. **Build check:** `shopify app build` completes without errors. Each extension reports its bundle size (must stay under the platform performance budget — typically ~100KB compressed per extension).
+4. **Build check:** `shopify app build` completes without errors. Each extension reports its bundle size (must stay under the platform performance budget — 64 KB compressed per extension, enforced at deploy).
 5. **Sandbox compliance check:** No browser API calls (`window`, `document`, `localStorage`, `fetch` to arbitrary URLs) appear in any extension's code. All data access goes through the `shopify` global signals object.
 
 These five checks form the baseline verification any feature or fix should pass before being marked complete.
@@ -107,13 +107,13 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 - Specify which **extension target** (or targets) the feature uses. Targets are configured in `shopify.extension.toml` under `[[extensions.targeting]]` and determine WHERE in the checkout flow the extension renders. The available targets are listed in the architectural directives below.
 - Plans MUST identify which `shopify` signals are needed (`shopify.lines`, `shopify.cost.totalAmount`, `shopify.shippingAddress`, etc.) and which Polaris web components will be used (`s-progress`, `s-box`, `s-text`, etc.).
 - Plans must NOT propose using standard HTML elements (`<div>`, `<button>`, etc.) or React-style components (`<BlockStack>`, `<Text>` from `@shopify/ui-extensions-react/checkout`) — neither will render in this API version.
-- When in doubt about which signal path or component name to use, consult the Shopify Dev MCP for the actual `api_version = "2026-04"` surface. Do not infer from older tutorials.
-- Performance budget: any plan that significantly increases bundle size needs explicit justification. Default budget per extension is around 100KB compressed.
+- When in doubt about which signal path or component name to use, consult the Shopify Dev MCP for the actual `api_version = "2026-10"` surface. Do not infer from older tutorials.
+- Performance budget: any plan that significantly increases bundle size needs explicit justification. The platform limit is 64 KB compressed JavaScript per extension, enforced at deploy.
 
 ### Plan-Reviewer
 
 - Apply adversarial scrutiny on sandbox compliance: are any browser APIs used? Are all data accesses going through `shopify` signals? Are all UI components Polaris web components (`s-*` elements)?
-- Verify the extension target specified in the plan actually exists and is available at `api_version = "2026-04"`. Use the Shopify Dev MCP to confirm if uncertain.
+- Verify the extension target specified in the plan actually exists and is available at `api_version = "2026-10"`. Use the Shopify Dev MCP to confirm if uncertain.
 - Verify specific component names (`s-progress`, `s-box`, etc.) and signal paths (`shopify.lines`, etc.) exist in this API version. Older tutorials reference React components and hooks that DO NOT EXIST here.
 - Demand that plans include i18n consideration: any user-facing string must use the localization API, not hardcoded text.
 - Demand that plans include `shopify app build` as a verification step (validates TypeScript + bundle size + sandbox compliance).
@@ -123,17 +123,17 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 - Use Polaris web components from the Shopify checkout component set for all UI. The components are rendered as `s-*` JSX elements. Common primitives:
   - **Layout:** `s-stack`, `s-box`, `s-grid`, `s-divider`
   - **Text:** `s-text`, `s-heading`, `s-link`
-  - **Actions:** `s-button`, `s-pressable`
+  - **Actions:** `s-button`, `s-clickable`
   - **Forms:** `s-text-field`, `s-checkbox`, `s-select`, `s-choice-list`
-  - **Feedback:** `s-banner`, `s-spinner`, `s-skeleton`
-  - **Media:** `s-image`, `s-icon`, `s-thumbnail`
+  - **Feedback:** `s-banner`, `s-spinner`, `s-skeleton-paragraph`
+  - **Media:** `s-image`, `s-icon`, `s-product-thumbnail`
   - **Progress:** `s-progress`
 - DO NOT use:
   - Standard HTML elements (`<div>`, `<span>`, `<p>`, `<button>`, `<input>`, etc.) — they will not render correctly.
   - React-style components from `@shopify/ui-extensions-react/checkout` (`<BlockStack>`, `<Text>`, `<Banner>`, etc.) — those are from an older API version not used in this project.
   - Imports from the `react` package — this is Preact, not React.
 - Access data via the `shopify` global signals object. Common accessors at `purchase.checkout.block.render`:
-  - `shopify.lines` — current line items (reactive). **Note:** the correct name at `api_version = "2026-04"` is `lines`, not `cartLines`. The older React + hooks API used `useCartLines()`, which is the source of this common confusion — `cartLines` does not exist on the `shopify` signals object.
+  - `shopify.lines` — current line items (reactive). **Note:** the correct name at `api_version = "2026-10"` is `lines`, not `cartLines`. The older React + hooks API used `useCartLines()`, which is the source of this common confusion — `cartLines` does not exist on the `shopify` signals object.
   - `shopify.cost.totalAmount` — cart total (reactive, respects discounts)
   - `shopify.cost.subtotalAmount` — pre-discount subtotal
   - `shopify.shippingAddress`, `shopify.billingAddress` — addresses
@@ -146,7 +146,7 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 - All user-facing strings go through the localization API and the extension's `locales/` files. Hardcoded English strings are a bug.
 - After meaningful changes, run in order: `shopify app build` (validates TypeScript + bundle size + sandbox). The dev server (`shopify app dev`) will also surface runtime errors during interactive testing.
 - Pre-save audit: remove unused imports (sandbox runtime is strict), confirm all JSX returns valid Polaris web components (returning bare HTML or unknown elements will fail at runtime).
-- Commit messages: `feat(<extension-name>): <description>` for features, `fix(<extension-name>): <description> (fixes <slug>)` for bug fixes.
+- Commit messages: `feat(<extension-name>): <description>` for features, `fix(<extension-name>): <description> (fixes <slug>)` for bug fixes, and `chore(<scope>): <description> (<slug>)` for dependency and API-version upgrades (scope is an extension name, or `app` for app-level files).
 
 ### QA
 
@@ -173,14 +173,14 @@ Audit-trail artifacts live in `docs/bugs/`, `docs/plans/`, `docs/reviews/`, `doc
 
 - For bug investigation via `/investigate`, follow the standard procedure from the global General agent prompt.
 - For Checkout UI Extension-specific investigations: first check whether the issue is a sandbox violation (e.g., extension trying to use a browser API), a signal path mismatch (e.g., accessing a property that doesn't exist on `shopify` at the configured target), or an extension target mismatch (extension configured for one target but expecting data from another).
-- For investigations of unfamiliar API surfaces, use the Shopify Dev MCP to verify component names, signal paths, and target availability at `api_version = "2026-04"`.
+- For investigations of unfamiliar API surfaces, use the Shopify Dev MCP to verify component names, signal paths, and target availability at `api_version = "2026-10"`.
 
 ---
 
 ## What NOT to change
 
 - **`shopify.app.toml`** at the project root — managed by Shopify CLI. Edit only when explicitly required by a plan.
-- **`shopify.extension.toml` per extension** — these configure the extension target, settings schema, capabilities, and `api_version`. Edit when adding extension targets or merchant settings, but be deliberate. NEVER change `api_version` as a drive-by; the entire codebase is tuned for `2026-04`.
+- **`shopify.extension.toml` per extension** — these configure the extension target, settings schema, capabilities, and `api_version`. Edit when adding extension targets or merchant settings, but be deliberate. NEVER change `api_version` as a drive-by; the entire codebase is tuned for `2026-10`. Every extension's `api_version`, the `[webhooks]` `api_version` in `shopify.app.toml`, and the Admin GraphQL version in `shared/models/faq.ts` stay on the same version, and each extension's `@shopify/ui-extensions` specifier uses the matching `YYYY.M.x` range (never a dist-tag such as `rc`). Version upgrades are planned work that touches all of these plus this file; see `docs/plans/upgrade-api-version-2026-10.md` for the precedent.
 - **`.shopify/`** directory — Shopify CLI internal state, do not commit or edit.
 - **Generated TypeScript declaration files** — regenerate via Shopify CLI rather than hand-editing.
 - **`pnpm-lock.yaml`** — let pnpm manage it (`pnpm install`); never hand-edit it. This project has no `package-lock.json` or `yarn.lock`; if one appears, an npm or yarn command was run by mistake — delete it, do not commit it.
@@ -205,7 +205,7 @@ Secrets that need to be available at runtime to the extension (e.g., a third-par
 
 ## Checkout UI Extension architectural directives
 
-The remainder of this document captures the platform-specific rules for Shopify Checkout UI Extensions on `api_version = "2026-04"`. Read carefully before any code modification.
+The remainder of this document captures the platform-specific rules for Shopify Checkout UI Extensions on `api_version = "2026-10"`. Read carefully before any code modification.
 
 ### 1. Project Directory Structure
 
@@ -241,12 +241,12 @@ Checkout UI Extensions run in a sandboxed JavaScript environment, NOT in the mer
 
 ### 3. Extension Targets
 
-The "extension target" determines WHERE in the checkout flow the extension renders. Set in `shopify.extension.toml` under `[[extensions.targeting]]`. Common targets at `api_version = "2026-04"`:
+The "extension target" determines WHERE in the checkout flow the extension renders. Set in `shopify.extension.toml` under `[[extensions.targeting]]`. Common targets at `api_version = "2026-10"`:
 
 - `purchase.checkout.block.render` — generic block, merchant places it via the checkout editor
 - `purchase.checkout.delivery-address.render-before` / `render-after`
-- `purchase.checkout.contact.render-before` / `render-after`
-- `purchase.checkout.payment.render-before` / `render-after`
+- `purchase.checkout.contact.render-after`
+- `purchase.checkout.payment-method-list.render-before` / `render-after`
 - `purchase.checkout.shipping-option-list.render-after`
 - `purchase.checkout.cart-line-item.render-after`
 - `purchase.checkout.actions.render-before`
@@ -258,14 +258,14 @@ Each target receives a slightly different `shopify` signals surface (e.g., `shop
 
 Use ONLY Polaris web components from the Shopify checkout component set. They render as lowercase `s-*` JSX elements. The available primitives (non-exhaustive; verify against Shopify Dev MCP for the authoritative list):
 
-- **Layout:** `s-stack`, `s-box`, `s-grid`, `s-divider`, `s-spacer`
+- **Layout:** `s-stack`, `s-box`, `s-grid`, `s-divider` (there is no spacer component; use the `gap` attribute)
 - **Text:** `s-text`, `s-heading`, `s-link`
-- **Actions:** `s-button`, `s-pressable`
+- **Actions:** `s-button`, `s-clickable`
 - **Forms:** `s-text-field`, `s-checkbox`, `s-select`, `s-choice-list`, `s-number-field`, `s-date-field`
-- **Feedback:** `s-banner`, `s-spinner`, `s-skeleton`, `s-skeleton-text`, `s-skeleton-image`
-- **Media:** `s-image`, `s-icon`, `s-thumbnail`
-- **Disclosure:** `s-disclosure`, `s-modal`, `s-tooltip`
-- **Tags & badges:** `s-tag`, `s-badge`
+- **Feedback:** `s-banner`, `s-spinner`, `s-skeleton-paragraph`
+- **Media:** `s-image`, `s-icon`, `s-product-thumbnail`
+- **Disclosure:** `s-details` (with `s-summary`), `s-modal`, `s-tooltip`
+- **Chips & badges:** `s-chip`, `s-badge`
 - **Progress:** `s-progress`
 
 These components are styled by Shopify and adapt to the merchant's checkout theme automatically. Customization is limited to component attributes (e.g., `tone`, `padding`, `border-radius`, `inline-alignment`). Most accept semantic tone tokens (e.g., `primary`, `success`, `warning`, `critical`, `neutral`) rather than arbitrary hex colors.
@@ -338,21 +338,19 @@ Read in the extension via `shopify.settings`:
 const threshold = shopify.settings.free_shipping_threshold;
 ```
 
-Available field types (verify against Shopify Dev MCP for the complete list at `api_version = "2026-04"`):
+Supported field types at `api_version = "2026-10"` (exhaustive per the Shopify Dev MCP; re-verify on the next upgrade):
 
+- `boolean`
 - `single_line_text_field`, `multi_line_text_field`
 - `number_integer`, `number_decimal`
-- `boolean`
 - `date`, `date_time`
-- `color`
-- `variant_reference`, `product_reference`, `collection_reference`, `customer_reference`
-- `choice` (dropdown selection from a defined set of values)
+- `variant_reference`
 
-If a field accepts arbitrary hex colors (`color` type) but the consuming component only supports semantic tones (e.g., `s-progress` only accepts `tone` attributes like `primary`/`success`/`warning`), use `single_line_text_field` or `choice` instead and validate in code.
+There is no `choice` or `color` type. For a fixed set of values (e.g. a semantic tone for `s-progress`, which accepts only `auto` or `critical`), use `single_line_text_field`, optionally with a `choices` validation under `[[extensions.settings.fields.validations]]`, and still validate the value in code.
 
 ### 8. Performance Budget
 
-Each extension has a strict bundle size budget enforced at deploy time (typically ~100KB compressed). Practices:
+Each extension has a strict bundle size budget enforced at deploy time (64 KB compressed JavaScript per extension). Practices:
 
 - Avoid heavy dependencies. Prefer pure-function utilities written inline.
 - Use Shopify primitives instead of custom layout libraries.
